@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mermaid": {
+      "url": "https://mcp.mermaid.ai/mcp",
+      "type": "http"
+    },
+    "vercel": {
+      "type": "http",
+      "url": "https://mcp.vercel.com"
+    }
+  }
+}
