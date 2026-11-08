@@ -1,0 +1,61 @@
+---
+title: Entrega y devolución de préstamos (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor EN as Encargado
+    participant FE as Angular (bandeja)
+    participant C as LoanController
+    participant S as LoanService
+    participant K as EquipmentCatalogService (catalog.api)
+    participant TS as LoanTransitionService
+    participant N as notifications (oyente del evento)
+    participant DB as MySQL
+    EN->>FE: Entregar un préstamo aprobado
+    FE->>C: POST /api/loans/{id}/delivery
+    C->>S: deliver(id, actorId)
+    activate S
+    S->>DB: SELECT loans FOR UPDATE
+    S->>K: lockForUpdate(equipmentIds)
+    alt no está APROBADO
+        C-->>FE: 409 LOAN_NOT_APPROVED "Solo se entregan préstamos aprobados"
+    else aún no inicia o servicio no abierto
+        C-->>FE: 409 LOAN_NOT_STARTED o SERVICE_NOT_STARTED
+    else total de unidades menor a la cantidad
+        C-->>FE: 409 INSUFFICIENT_UNITS
+    else puede entregarse
+        S->>S: dentro del plazo de recogida, fin efectivo = fin o día de entrega
+        S->>TS: transition(APROBADO a ENTREGADO)
+        TS->>DB: UPDATE condicional, historial y evento
+        TS->>N: LoanStatusChangedEvent
+        opt préstamo de 2 días
+            N->>DB: alerta de próximo a vencer
+        end
+        S-->>C: LoanResponse
+        C-->>FE: 200 OK
+    end
+    deactivate S
+    EN->>FE: Registrar devolución
+    FE->>C: POST /api/loans/{id}/return con líneas por equipo
+    C->>S: registerReturn(id, request, actorId)
+    activate S
+    S->>DB: SELECT loans FOR UPDATE
+    alt no está ENTREGADO ni VENCIDO
+        C-->>FE: 409 LOAN_NOT_DELIVERED "El préstamo no ha sido entregado"
+    else suma de líneas distinta de lo prestado
+        C-->>FE: 400 RETURN_QUANTITIES_MISMATCH
+    else líneas válidas
+        S->>DB: INSERT loan_item_returns (BUENO, CON_DESPERFECTOS, DANADO, PERDIDO)
+        opt DANADO o PERDIDO
+            S->>K: decreaseTotalUnits(equipmentId, n)
+        end
+        opt devolución con retraso
+            S->>DB: INSERT sanctions
+        end
+        S->>TS: transition(ENTREGADO o VENCIDO a DEVUELTO)
+        TS->>DB: UPDATE condicional e historial
+        TS->>N: LoanStatusChangedEvent (cierra alertas)
+        S-->>C: LoanReturnResponse con affectedApprovedLoans
+        C-->>FE: 200 OK y aviso de APROBADO afectados
+    end
+    deactivate S

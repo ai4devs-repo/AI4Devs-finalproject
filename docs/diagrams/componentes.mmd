@@ -1,0 +1,111 @@
+---
+title: Componentes (diseño)
+---
+flowchart TB
+    subgraph FE["Frontend Angular (contenedor nginx), environment.apiUrl = /api"]
+        direction TB
+        subgraph CORE["core/"]
+            AUTHS["AuthService<br/>access token en memoria<br/>renovación al arrancar"]
+            AINT["authInterceptor<br/>agrega Bearer, renueva ante 401 y reintenta"]
+            EINT["errorInterceptor<br/>muestra detail y requestId"]
+            AG["authGuard"]
+            GUARD["roleGuard<br/>rutas por rol"]
+        end
+        subgraph FEAT["features/"]
+            FAUTH["auth<br/>login, registro"]
+            FCAT["catalog<br/>búsqueda y disponibilidad"]
+            FLOAN["loans<br/>carrito, solicitud, mis préstamos"]
+            FADM["admin<br/>bandeja, inventario, métricas, cuentas"]
+            FNOT["notifications<br/>alertas"]
+        end
+        SHARED["shared/<br/>componentes y pipes"]
+    end
+
+    subgraph BE["Backend Spring Boot (contenedor)"]
+        direction TB
+        subgraph SEC["Filtros y seguridad"]
+            TRACE["RequestTraceFilter<br/>requestId en MDC"]
+            BEARER["BearerTokenAuthenticationFilter<br/>resource server"]
+            UMDC["UserMdcFilter"]
+            SECC["SecurityConfig<br/>reglas por URL"]
+            ENTRY["ProblemDetailAuthenticationEntryPoint<br/>401"]
+            DENIED["ProblemDetailAccessDeniedHandler<br/>403"]
+        end
+        subgraph MODS["Módulos"]
+            subgraph MAUTH["auth"]
+                AC["AuthController · UserController"]
+                ASV["AuthService · RefreshTokenService<br/>LoginAttemptService · LoginRateLimiter<br/>UserAccountService"]
+                ASI["ActiveSessionInterceptor"]
+                AREPO["UserRepository · RefreshTokenRepository"]
+            end
+            subgraph MCAT["catalog"]
+                CC["EquipmentController · CategoryController"]
+                CSV["EquipmentService · EquipmentCatalogService"]
+                CREPO["EquipmentRepository · CategoryRepository"]
+            end
+            subgraph MLOAN["loans"]
+                LC["LoanController"]
+                LSV["LoanService · LoanTransitionService<br/>LoanStateMachine · EquipmentUsageServiceImpl<br/>UserLoanActivityServiceImpl"]
+                LJOB["PickupExpirationJob · DailyLoanReviewJob<br/>InternalJobController"]
+                LREPO["LoanRepository · LoanStatusHistoryRepository"]
+            end
+            subgraph MNOT["notifications"]
+                NC["NotificationController"]
+                NSV["NotificationService<br/>oyente LoanStatusChangedEvent"]
+                NJOB["DueSoonAlertJob"]
+            end
+            subgraph MREP["reports"]
+                RC["ReportController"]
+                RSV["ReportService"]
+            end
+        end
+        subgraph SHB["shared"]
+            SEXC["exception<br/>GlobalExceptionHandler, BusinessException"]
+            SWEB["web<br/>RequestTraceFilter, PageResponse"]
+            SPER["persistence<br/>BaseEntity"]
+            SCFG["config<br/>Clock, caché, OpenAPI, MapperConfig"]
+        end
+        CACHE["Caffeine<br/>categories, equipmentSummaries<br/>sin caché de disponibilidad"]
+        MAP["DTO Request/Response y MapStruct<br/>no se exponen entidades"]
+    end
+
+    DB[("MySQL 8<br/>Flyway")]
+
+    FAUTH --> AUTHS
+    FCAT --> AINT
+    FLOAN --> AINT
+    FADM --> AINT
+    FNOT --> AINT
+    AUTHS --> AINT
+    AINT --> EINT
+    GUARD -.-> FEAT
+    AG -.-> FEAT
+    EINT -->|"HTTPS /api/*"| TRACE
+    TRACE --> BEARER
+    BEARER --> UMDC
+    UMDC --> SECC
+    BEARER -.->|"401"| ENTRY
+    SECC -.->|"403"| DENIED
+    SECC -->|"reglas por URL"| MODS
+    ASI -.->|"toda petición autenticada, consulta por PK, sin caché"| AREPO
+    AC --> ASV --> AREPO
+    CC --> CSV --> CREPO
+    LC --> LSV --> LREPO
+    LJOB --> LSV
+    NC --> NSV
+    NJOB --> NSV
+    RC --> RSV
+    LSV -->|"catalog.api"| CSV
+    LSV -->|"auth.api"| ASV
+    LSV -.->|"implementa EquipmentUsageService"| CSV
+    LSV -.->|"implementa auth.api.UserLoanActivityService"| ASV
+    LSV -.->|"evento LoanStatusChangedEvent"| NSV
+    NSV -->|"loans.api y auth.api"| LSV
+    RSV -->|"api de auth, catalog y loans"| LSV
+    CSV --> CACHE
+    MODS --> MAP
+    AREPO --> DB
+    CREPO --> DB
+    LREPO --> DB
+    SEXC -.->|"errores de controllers"| MODS
+    MODS --> SHB

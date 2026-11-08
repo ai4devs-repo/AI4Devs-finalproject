@@ -1,0 +1,55 @@
+---
+title: Aprobar préstamo POST /api/loans/{id}/approval (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor EN as Encargado
+    participant C as LoanController
+    participant S as LoanService
+    participant K as EquipmentCatalogService (catalog.api)
+    participant TS as LoanTransitionService
+    participant M as LoanMapper
+    participant DB as MySQL
+    EN->>C: POST /api/loans/{id}/approval
+    C->>C: @PreAuthorize ENCARGADO o ADMIN
+    C->>S: approve(id, actorId)
+    activate S
+    Note over S,DB: Una transacción READ COMMITTED
+    S->>S: horario de servicio con Clock (8:00 AM a 5:00 PM)
+    alt fuera del horario
+        S-->>C: OutsideServiceHoursException
+        C-->>EN: 409 OUTSIDE_APPROVAL_HOURS "Las aprobaciones se hacen de 8:00 AM a 5:00 PM"
+    else en horario
+        S->>DB: SELECT loans WHERE id FOR UPDATE
+        Note right of DB: un segundo encargado espera aquí el bloqueo
+        alt el préstamo no está SOLICITADO
+            S-->>C: LOAN_NOT_PENDING
+            C-->>EN: 409 "Solo se resuelven solicitudes pendientes"
+        else fecha fin ya pasó o inicio ya pasó sin poder aprobar
+            C-->>EN: 409 LOAN_ALREADY_ENDED o LOAN_ALREADY_STARTED
+        else SOLICITADO vigente
+            S->>K: lockForUpdate(equipmentIds) en orden de id
+            K->>DB: SELECT equipment FOR UPDATE
+            S->>DB: suma retenidas con el rango efectivo de retención
+            alt equipo en mantenimiento o dado de baja
+                C-->>EN: 409 EQUIPMENT_UNAVAILABLE "Equipo no disponible"
+            else unidades insuficientes
+                C-->>EN: 409 INSUFFICIENT_UNITS "Unidades insuficientes" con items[]
+            else hay unidades
+                S->>S: PickupDeadlinePolicy calcula pickup_deadline
+                S->>TS: transition(loan, APROBADO, actorId, at)
+                TS->>DB: UPDATE loans WHERE id y status = SOLICITADO
+                alt 0 filas afectadas
+                    TS-->>C: CONCURRENT_MODIFICATION
+                    C-->>EN: 409
+                else 1 fila
+                    TS->>DB: INSERT loan_status_history
+                    TS->>TS: publica LoanStatusChangedEvent
+                    S->>M: toResponse(loan)
+                    S-->>C: LoanResponse con pickupDeadline
+                    C-->>EN: 200 OK
+                end
+            end
+        end
+    end
+    deactivate S

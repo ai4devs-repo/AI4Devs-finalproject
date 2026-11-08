@@ -1,0 +1,54 @@
+---
+title: Inicio de sesión POST /api/auth/login (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor U as Usuario
+    participant FE as Angular (LoginComponent / AuthService)
+    participant T as RequestTraceFilter
+    participant C as AuthController
+    participant L as LoginRateLimiter
+    participant S as AuthService
+    participant A as LoginAttemptService
+    participant RT as RefreshTokenService
+    participant DB as MySQL (users, refresh_tokens)
+    U->>FE: Ingresa correo y contraseña
+    FE->>T: POST /api/auth/login {email, password, replaceExistingSession}
+    T->>C: continúa con requestId en MDC
+    alt campos vacíos o demasiado largos
+        C-->>FE: 400 VALIDATION_ERROR con X-Request-Id
+    else solicitud válida
+        C->>L: comprueba intentos fallidos de la IP
+        alt origen bloqueado: 10 fallos, hasta 15 min desde el primer fallo de la serie
+            C-->>FE: 429 TOO_MANY_ATTEMPTS "Demasiados intentos. Inténtalo de nuevo más tarde" con Retry-After, sin mirar correo ni contraseña
+        else IP dentro del límite
+            C->>S: authenticate(request)
+            S->>DB: busca por email en minúsculas con deleted_at IS NULL
+            S->>S: BCrypt.matches, con hash ficticio si no hay cuenta, y también si está bloqueada
+            alt contraseña incorrecta, correo inexistente, cuenta dada de baja o bloqueada
+                S->>A: registra el fallo (REQUIRES_NEW, solo si la cuenta existe)
+                A->>DB: failed_login_attempts, login_locked_until
+                S->>S: espera hasta el piso de tiempo de 0,5 s y registra el motivo solo en el log
+                S-->>C: InvalidCredentialsException
+                C-->>FE: 401 INVALID_CREDENTIALS "Credenciales inválidas"
+                FE-->>U: Muestra siempre "Credenciales inválidas"
+            else credenciales correctas
+                S->>DB: bloquea users FOR UPDATE, reinicia el contador
+                S->>RT: abrir sesión
+                RT->>DB: busca sesión no revocada del usuario
+                alt sesión vigente y replaceExistingSession es false
+                    RT-->>C: ActiveSessionExistsException
+                    C-->>FE: 409 ACTIVE_SESSION_EXISTS con activeSession
+                    FE-->>U: Aviso "Ya tienes una sesión activa en otro lugar": cerrar la otra o cancelar (ver secuencia-sesion-unica)
+                else sin sesión, vencida o con reemplazo confirmado
+                    RT->>DB: revoca la anterior (EXPIRED o REPLACED) e inserta la sesión con solo el hash
+                    RT->>RT: JwtEncoder emite access token (sub, role, sid, exp 15 min)
+                    RT-->>C: AuthResponse y cookie
+                    C-->>FE: 200 {accessToken, tokenType, expiresAt, sessionExpiresAt, user} y Set-Cookie prestalab_rt
+                    FE->>FE: Guarda el access token solo en memoria, activa la rotación por actividad y el aviso de fin de sesión
+                    FE-->>U: Redirige al inicio de su rol
+                end
+            end
+        end
+    end
+    T-->>FE: cabecera X-Request-Id en toda respuesta

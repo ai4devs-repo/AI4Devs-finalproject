@@ -1,0 +1,39 @@
+---
+title: Módulos del backend (diseño)
+---
+flowchart LR
+    subgraph SH["shared"]
+        SHX["excepciones, web, persistence, config"]
+    end
+    subgraph AUTH["auth"]
+        AAPI["auth.api<br/>UserDirectoryService<br/>UserLoanActivityService"]
+    end
+    subgraph CAT["catalog"]
+        CAPI["catalog.api<br/>EquipmentCatalogService<br/>EquipmentUsageService"]
+    end
+    subgraph LOANS["loans"]
+        LAPI["loans.api<br/>LoanQueryService<br/>LoanStatusChangedEvent"]
+    end
+    subgraph NOT["notifications"]
+        NAPI["notifications.api"]
+    end
+    subgraph REP["reports"]
+        RAPI["reports sin tablas propias"]
+    end
+    LOANS --> AAPI
+    LOANS --> CAPI
+    NOT --> AAPI
+    NOT --> LAPI
+    REP --> AAPI
+    REP --> CAPI
+    REP --> LAPI
+    AUTH --> SHX
+    CAT --> SHX
+    LOANS --> SHX
+    NOT --> SHX
+    REP --> SHX
+    LAPI -.->|"implementa EquipmentUsageService"| CAPI
+    LAPI -.->|"implementa UserLoanActivityService"| AAPI
+    LAPI -.->|"evento LoanStatusChangedEvent"| NAPI
+    PROH["Prohibido: repositorios, entidades, servicios y DTO de otro módulo, y ciclos<br/>Solo se depende de api y shared (ArchUnit)"]
+    LOANS ~~~ PROH

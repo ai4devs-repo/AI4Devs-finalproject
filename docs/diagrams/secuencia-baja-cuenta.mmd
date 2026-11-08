@@ -1,0 +1,63 @@
+---
+title: Baja de cuenta DELETE /api/users/{id} (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor AD as ADMIN
+    actor ST as Estudiante
+    participant C as UserController
+    participant UA as UserAccountService
+    participant LA as UserLoanActivityService (loans)
+    participant LS as LoanService (loans)
+    participant AI as ActiveSessionInterceptor
+    participant DB as MySQL
+    AD->>C: DELETE /api/users/{id}
+    C->>C: @PreAuthorize ADMIN
+    C->>UA: deactivate(id, adminId)
+    activate UA
+    Note over UA,DB: Una transacción, orden users y luego refresh_tokens. Los préstamos solo se leen
+    UA->>DB: bloquea users FOR UPDATE (y los ADMIN activos por id si el objetivo es ADMIN)
+    alt cuenta inexistente
+        UA-->>AD: 404 USER_NOT_FOUND
+    else ya dada de baja
+        UA-->>AD: 200 idempotente con el deactivatedAt original y sessionRevoked false
+    else último ADMIN activo
+        UA-->>AD: 409 LAST_ADMIN "Debe existir al menos un administrador activo"
+    else es la propia cuenta
+        UA-->>AD: 409 CANNOT_DEACTIVATE_SELF "No puedes darte de baja a ti mismo"
+    else reglas de users cumplidas
+        UA->>LA: findLoansInProgress(userId)
+        LA->>DB: lee SOLICITADO, APROBADO, ENTREGADO y VENCIDO del titular, sin bloquear
+        LA-->>UA: lista de LoanInProgressView
+        alt hay algún préstamo en curso
+            UA-->>AD: 409 USER_HAS_LOANS_IN_PROGRESS "La cuenta tiene préstamos en curso" con loans[], sin cambiar nada
+        else sin préstamos en curso
+            UA->>DB: deleted_at y deactivated_by
+            UA->>DB: revoca la sesión (motivo interno ACCOUNT_DISABLED)
+            UA-->>AD: 200 {userId, deactivatedAt, sessionRevoked}
+        end
+    end
+    deactivate UA
+    Note over AD,DB: No hay cancelación automática de préstamos al dar de baja
+    par solicitud simultánea del estudiante, serializada en la fila de users
+        ST->>LS: POST /api/loans
+        LS->>DB: lockStudentForUpdate (users FOR UPDATE)
+        alt la solicitud confirma primero
+            LS-->>ST: 201 SOLICITADO (la baja, al obtener el bloqueo, responde 409 USER_HAS_LOANS_IN_PROGRESS)
+        else la baja confirma primero
+            LS-->>ST: 401 SESSION_INVALIDATED "Tu sesión ya no es válida. Inicia sesión de nuevo" sin crear nada
+        end
+    end
+    Note over ST,AI: Corte inmediato en toda petición autenticada, sin ventana
+    ST->>AI: consulta de ESTUDIANTE con access token aún vigente
+    AI->>DB: consulta de sesión y cuenta
+    AI-->>ST: 401 SESSION_INVALIDATED "Tu sesión ya no es válida. Inicia sesión de nuevo"
+    ST->>AI: acción que modifica datos
+    AI->>DB: lee sesión y cuenta
+    AI-->>ST: 401 SESSION_INVALIDATED
+    ST->>C: POST /api/auth/refresh (rotación por actividad o access token vencido)
+    C-->>ST: 401 SESSION_INVALIDATED
+    ST->>C: POST /api/auth/login
+    C-->>ST: 401 INVALID_CREDENTIALS "Credenciales inválidas"
+    Note over AD,DB: Con préstamos en curso, el ADMIN puede cortar el acceso con DELETE /api/users/{id}/session (CLOSED_BY_ADMIN)
+    Note over AD,DB: Variante: si la baja se hizo fuera de la aplicación, se detecta en la renovación al leer users.deleted_at

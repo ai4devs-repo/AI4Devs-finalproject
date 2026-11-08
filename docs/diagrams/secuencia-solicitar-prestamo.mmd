@@ -1,0 +1,56 @@
+---
+title: Solicitar préstamo POST /api/loans (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor E as Estudiante
+    participant FE as Angular (LoanRequestComponent)
+    participant C as LoanController
+    participant S as LoanService
+    participant U as UserDirectoryService (auth.api)
+    participant K as EquipmentCatalogService (catalog.api)
+    participant TS as LoanTransitionService
+    participant M as LoanMapper
+    participant DB as MySQL
+    E->>FE: Confirma la solicitud (fechas e ítems)
+    FE->>C: POST /api/loans con Bearer
+    C->>C: @PreAuthorize ESTUDIANTE y @Valid LoanRequest
+    Note over C: Rango de máximo 7 días incluidos, inicio desde hoy, equipos sin repetir
+    alt datos inválidos
+        C-->>FE: 400 VALIDATION_ERROR con requestId
+    else datos válidos
+        C->>S: create(request, studentId)
+        activate S
+        Note over S,DB: Una sola transacción READ COMMITTED
+        S->>U: lockStudentForUpdate(studentId)
+        U->>DB: SELECT users FOR UPDATE
+        S->>DB: cuenta préstamos en curso (SOLICITADO incluidos) y sanciones
+        S->>K: lockForShare(equipmentIds) en orden de id
+        K->>DB: SELECT equipment FOR SHARE
+        S->>DB: suma retenidas con el rango efectivo
+        Note right of DB: APROBADO hasta GREATEST(end_date, DATE(pickup_deadline))<br/>ENTREGADO y VENCIDO hasta la devolución
+        alt ya tiene 3 préstamos en curso
+            S-->>C: LoanLimitReachedException
+            C-->>FE: 409 LOAN_LIMIT_REACHED
+        else bloqueado por sanción o con un préstamo vencido sin devolver
+            S-->>C: StudentBlockedException u OVERDUE_LOAN_PENDING
+            C-->>FE: 409 STUDENT_BLOCKED u OVERDUE_LOAN_PENDING
+        else equipo en mantenimiento o dado de baja
+            S-->>C: EquipmentUnavailableException
+            C-->>FE: 409 EQUIPMENT_UNAVAILABLE "Equipo no disponible"
+        else unidades insuficientes
+            S-->>C: InsufficientUnitsException
+            C-->>FE: 409 INSUFFICIENT_UNITS con items[]
+            FE-->>E: Muestra qué cantidades ajustar
+        else todo cumple
+            S->>DB: INSERT loans y loan_items (SOLICITADO)
+            S->>TS: registrar creación (NULL a SOLICITADO)
+            TS->>DB: INSERT loan_status_history
+            S->>M: toResponse(loan)
+            M-->>S: LoanResponse
+            S-->>C: LoanResponse
+            C-->>FE: 201 Created con Location
+            FE-->>E: "Solicitud enviada" y abre Mis préstamos
+        end
+        deactivate S
+    end

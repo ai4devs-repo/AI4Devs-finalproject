@@ -1,0 +1,45 @@
+---
+title: Sesión única por usuario (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor A as Dispositivo A
+    actor B as Dispositivo B
+    participant C as AuthController
+    participant RT as RefreshTokenService
+    participant DB as MySQL (users, refresh_tokens)
+    participant I as ActiveSessionInterceptor
+    participant UC as UserController
+    Note over A,DB: A tiene una sesión vigente
+    B->>C: POST /api/auth/login con credenciales correctas
+    C->>DB: bloquea users FOR UPDATE
+    C->>RT: abrir sesión
+    RT->>DB: busca la sesión no revocada del usuario
+    alt la sesión anterior ya venció
+        RT->>DB: revoca con EXPIRED y crea la nueva
+        C-->>B: 200 sin 409
+    else la sesión de A sigue vigente
+        C-->>B: 409 ACTIVE_SESSION_EXISTS "Ya tienes una sesión activa en otro lugar" con activeSession
+        B->>B: aviso con dos opciones: cerrar la otra sesión e ingresar, o cancelar (A sigue activa)
+        B->>C: POST /api/auth/login con replaceExistingSession true
+        C->>RT: abrir sesión con reemplazo
+        RT->>DB: revoca la sesión de A (REPLACED) y crea la de B
+        C-->>B: 200 con sesión nueva
+    end
+    A->>I: cualquier petición con access token aún vigente
+    I->>DB: lee la sesión por sid
+    I-->>A: 401 SESSION_REPLACED
+    A->>C: POST /api/auth/refresh
+    C-->>A: 401 SESSION_REPLACED
+    A->>A: mensaje "Tu sesión fue cerrada porque iniciaste sesión en otro lugar" y vuelve al inicio de sesión
+    Note over UC,DB: Cierre administrativo: DELETE /api/users/{id}/session por un ADMIN
+    alt hay sesión vigente
+        UC->>DB: revoca la sesión con CLOSED_BY_ADMIN
+        UC-->>UC: 204
+        A->>I: usa la sesión cerrada
+        I-->>A: 401 SESSION_INVALIDATED "Tu sesión ya no es válida. Inicia sesión de nuevo"
+    else sin sesión activa
+        UC-->>UC: 409 NO_ACTIVE_SESSION "La cuenta no tiene sesión activa"
+    else la cuenta no existe
+        UC-->>UC: 404 USER_NOT_FOUND
+    end

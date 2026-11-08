@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> SOLICITADO : estudiante solicita
+    SOLICITADO --> APROBADO : encargado aprueba en horario de servicio
+    SOLICITADO --> RECHAZADO : rechazo manual, sin resolver a tiempo o equipo dado de baja
+    SOLICITADO --> CANCELADO : estudiante cancela
+    APROBADO --> ENTREGADO : encargado entrega dentro del plazo de recogida
+    APROBADO --> RECHAZADO : sistema cierra como no recogido
+    APROBADO --> CANCELADO : estudiante cancela
+    ENTREGADO --> VENCIDO : revisión diaria, fecha fin efectiva anterior a hoy
+    ENTREGADO --> DEVUELTO : encargado registra devolución
+    VENCIDO --> DEVUELTO : encargado registra devolución
+    RECHAZADO --> [*]
+    CANCELADO --> [*]
+    DEVUELTO --> [*]
