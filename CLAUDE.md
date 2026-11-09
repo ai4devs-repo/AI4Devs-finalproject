@@ -53,7 +53,7 @@ Proyecto final del curso de Ingeniería de Software con IA. Autor: AFRC. Jira: p
 ## Flujo de trabajo
 - Por historia: `/implementar-historia PLAB-<n>` (lee Jira, crea rama, delega a subagentes, verifica, PR, actualiza Jira).
 - Subagentes: `database-engineer` (opus), `backend-developer` (sonnet), `frontend-developer` (sonnet), `qa-tester` (sonnet), `code-reviewer` (opus, solo lectura), `docs-writer` (sonnet + MCP Mermaid).
-- Commits: `/hacer-commit [PLAB-n]` (solo bajo petición del usuario; nunca hace push; prepara la descripción del PR con `.github/pull_request_template.md`).
+- Commits: `/hacer-commit [PLAB-n]` (solo bajo petición del usuario; nunca hace push; prepara la descripción del PR con `.github/pull_request_template.md` y, si el usuario confirma, invoca `/crear-pr`). Pull Request: `/crear-pr [base] [PLAB-n]` (publica la rama con confirmación y abre el PR con la plantilla; nunca a `main` directo).
 - Diagramas: `/generar-diagramas [nombre]`. Documentación: `/actualizar-documentacion [sección]`.
 - Al cerrar una tarea con IA relevante: `/registrar-prompt <seccion> <tema>` (secciones 1 a 7 de PROMPTS.md, ej. `2.5 login`).
 

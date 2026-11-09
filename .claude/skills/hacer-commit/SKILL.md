@@ -3,14 +3,14 @@ name: hacer-commit
 description: Prepara y crea commits del monorepo siguiendo las convenciones del proyecto (Conventional Commits con la clave Jira, mensajes en español, commits atómicos por tema, sin secretos). Úsala solo cuando el usuario pida hacer un commit o guardar cambios en git.
 disable-model-invocation: true
 argument-hint: "[PLAB-n] [descripción opcional del cambio]"
-allowed-tools: Bash(git status *) Bash(git diff *) Bash(git log *) Bash(git branch *) Bash(git add *) Bash(git commit *) Bash(git restore --staged *)
+allowed-tools: Bash(git status *) Bash(git diff *) Bash(git log *) Bash(git branch *) Bash(git add *) Bash(git commit *) Bash(git restore --staged *) Skill(crear-pr)
 ---
 
 # Hacer commit
 
 Argumentos: $ARGUMENTS (clave Jira `PLAB-<n>` y/o una pista del cambio).
 
-Nunca ejecutes `git push`, `--force`, `--no-verify`, `git reset --hard`, `git clean` ni `git checkout .`. No hagas commits en `main`. El push y el Pull Request los decide el usuario; la skill solo prepara la descripción del PR (paso 8).
+Nunca ejecutes `git push`, `--force`, `--no-verify`, `git reset --hard`, `git clean` ni `git checkout .`. No hagas commits en `main`. El push y el Pull Request los decide el usuario: esta skill prepara la descripción del PR (paso 8) y, si el usuario lo confirma, delega en `crear-pr` (paso 9).
 
 ## Pasos
 
@@ -26,6 +26,7 @@ Nunca ejecutes `git push`, `--force`, `--no-verify`, `git reset --hard`, `git cl
    - **Qué se hizo:** resumen por áreas (backend, frontend, base de datos, documentación, pruebas), tomado de los commits.
    - **Cómo se probó:** los comandos y escenarios realmente ejecutados en esta sesión o por `/verificar-calidad`. Si es solo documentación, indica qué se revisó (por ejemplo, validación del YAML con `swagger-cli`, renderizado de diagramas con `mermaid-cli`).
    - **Resultados de las pruebas:** el resultado real de esas ejecuciones. Si algo no se ejecutó, escribe «No ejecutado» con el motivo. Nunca inventes resultados, enlaces ni números.
-   Marca la lista de verificación solo con lo que hayas comprobado. Si el usuario pide abrir el PR, usa `gh pr create --body-file` con ese texto, pero solo después de que el usuario haya hecho el push; esta skill no hace push.
+   Marca la lista de verificación solo con lo que hayas comprobado. Guarda el cuerpo en un archivo temporal fuera del repositorio (el directorio temporal de la sesión).
+9. **Pull Request:** pregunta al usuario si quiere abrir el PR ahora. Si responde que sí, invoca la skill `crear-pr` (herramienta Skill) pasándole la rama base, la clave Jira y la descripción preparada en el paso 8, para que no se redacte de nuevo. `crear-pr` es la única que hace el push (con confirmación) y abre el PR; esta skill nunca ejecuta `git push` ni `gh pr create`. Si el usuario responde que no, termina entregando la descripción.
 
 Termina cada commit con las líneas de atribución que indique la sesión, si las hay.
