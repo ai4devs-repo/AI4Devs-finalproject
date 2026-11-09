@@ -19,8 +19,7 @@ Sistema web de préstamo de equipos y recursos académicos. Proyecto final del c
 
 ### **0.1. Tu nombre completo:**
 
-<!-- COMPLETAR: nombre completo -->
-_Nombre completo del autor_ (AFRC)
+Andres Rey
 
 ### **0.2. Nombre del proyecto:**
 
