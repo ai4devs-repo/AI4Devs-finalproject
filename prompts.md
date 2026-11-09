@@ -2135,3 +2135,27 @@ Your claude.ai usage limit has reset. Continue the task you were working on when
 ~~~text
 ok
 ~~~
+
+#### P-124 · 2026-11-08 19:01 · prompt · `feature/entrega-1-AFRC`
+
+~~~text
+crea una skill para crear el PR que siga esas instrucciones. Confirmo que ese es el repositorio. Renombra para ajustar el espacio al final del nombre del hook
+~~~
+
+#### P-125 · 2026-11-08 19:04 · prompt · `feature/entrega-1-AFRC`
+
+~~~text
+hacer-commit deberia llamar a la skill crear PR, ajusta el PR y haz commit de los ultimos cambios.
+~~~
+
+#### P-126 · 2026-11-08 19:06 · comando · `feature/entrega-1-AFRC`
+
+~~~text
+/hacer-commit Entrega 1. Estructura Proyecto y Harness.
+~~~
+
+#### P-127 · 2026-11-08 19:07 · prompt · `feature/entrega-1-AFRC`
+
+~~~text
+ok
+~~~
