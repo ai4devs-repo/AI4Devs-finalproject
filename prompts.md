@@ -2159,3 +2159,21 @@ hacer-commit deberia llamar a la skill crear PR, ajusta el PR y haz commit de lo
 ~~~text
 ok
 ~~~
+
+#### P-128 · 2026-11-08 19:11 · prompt · `feature/entrega-1-AFRC`
+
+~~~text
+abre PR. Luego modifica el README.md para agregar la URL del primer PR en la seccion 7 Pull Requests
+~~~
+
+#### P-129 · 2026-11-08 19:14 · comando · `feature/entrega-1-AFRC`
+
+~~~text
+/hacer-commit Actualizacion Readme con Link al PR-1
+~~~
+
+#### P-130 · 2026-11-08 19:15 · prompt · `feature/entrega-1-AFRC`
+
+~~~text
+ok
+~~~
