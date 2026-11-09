@@ -63,8 +63,7 @@ El catálogo de ejemplo tiene 3 categorías (Cómputo, Audiovisual, Laboratorio)
 
 ### 0.5. URL o archivo comprimido del repositorio
 
-<!-- COMPLETAR -->
-`https://github.com/<usuario>/prestalab`
+https://github.com/ai4devs-repo/AI4Devs-finalproject/blob/feature/entrega-1-AFRC
 
 Ramas de entrega: `feature/entrega-1-AFRC`, `feature/entrega-2-AFRC`, `final-project-AFRC`.
 
