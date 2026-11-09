@@ -2493,9 +2493,23 @@ Reglas comunes a los tres tickets (ADR `docs/adr/0001-arquitectura.md`, revisió
 
 ## 7. Pull Requests
 
-Todavía no existen pull requests de estos tres tickets: lo que sigue son plantillas. Al crear cada PR se reemplaza el marcador por el enlace real y los resultados verificados. No se inventan enlaces, números ni resultados.
+El primer Pull Request es el de la Entrega 1 (estructura del proyecto, harness y definición del producto) y ya está abierto. Los tres siguientes corresponden a los tickets de la historia HU-04 y todavía no existen: son plantillas. Al crear cada PR se reemplaza el marcador por el enlace real y los resultados verificados. No se inventan enlaces, números ni resultados.
 
-**Pull Request 1**
+**Pull Request 1 · Entrega 1: estructura del proyecto, harness y definición del producto**
+
+| Campo | Detalle |
+|---|---|
+| Título | `Entrega 1: estructura del proyecto, harness y definición del producto` |
+| Enlace | [ai4devs-repo/AI4Devs-finalproject#1](https://github.com/ai4devs-repo/AI4Devs-finalproject/pull/1) |
+| Rama | `feature/entrega-1-AFRC` → `main` |
+| Ticket | PLAB-1 (épica «[E0] Fundación técnica») |
+| Estado | Abierto (2026-11-08) |
+
+- **Descripción:** estructura del monorepo, harness de Claude Code (9 subagentes, 14 skills, 8 hooks, servidores MCP y `CLAUDE.md`), 23 historias de usuario (11 Must y 12 Should), ADR de arquitectura, modelo de datos MySQL en tercera forma normal, 15 diagramas, contrato OpenAPI de diseño, README completado, plan de tickets creado en Jira y registro de prompts. No incluye código de aplicación.
+- **Pruebas y resultados:** validación del OpenAPI con `swagger-cli`, renderizado de los diagramas con `mermaid-cli` y prueba del DDL en un MySQL 8.0 desechable (reportados por los agentes que los ejecutaron); revisiones aprobadas de las historias (`us-reviewer`) y de la tabla de tickets (`arquitecto-sw`). Las pruebas unitarias, de integración y E2E no se ejecutaron porque aún no hay código. El detalle está en la descripción del PR.
+- **Revisión IA:** `us-reviewer` (15 rondas sobre las historias) y `arquitecto-sw` (revisiones del ADR y de la tabla de tickets). `code-reviewer` no se ejecutó, porque el PR no contiene código.
+
+**Pull Request previsto 1 (Ticket 1 [DB])**
 
 | Campo | Detalle |
 |---|---|
@@ -2516,7 +2530,7 @@ Todavía no existen pull requests de estos tres tickets: lo que sigue son planti
 - **Revisión IA:** <!-- COMPLETAR hallazgos de code-reviewer y cómo se resolvieron -->
 - **Estado:** <!-- COMPLETAR (abierto / merged / fecha) -->
 
-**Pull Request 2**
+**Pull Request previsto 2 (Ticket 2 [BACK])**
 
 | Campo | Detalle |
 |---|---|
@@ -2537,7 +2551,7 @@ Todavía no existen pull requests de estos tres tickets: lo que sigue son planti
 - **Revisión IA:** <!-- COMPLETAR hallazgos de code-reviewer y cómo se resolvieron -->
 - **Estado:** <!-- COMPLETAR (abierto / merged / fecha) -->
 
-**Pull Request 3**
+**Pull Request previsto 3 (Ticket 3 [FRONT])**
 
 | Campo | Detalle |
 |---|---|
