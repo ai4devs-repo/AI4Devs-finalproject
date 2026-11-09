@@ -1,0 +1,35 @@
+---
+title: Infraestructura y despliegue (diseño)
+---
+flowchart TB
+    DEV["Desarrollador + Claude Code<br/>(hooks y skills)"] -->|"git push rama"| GH["GitHub<br/>monorepo"]
+    GH -->|"PR"| CI["GitHub Actions ci.yml"]
+    subgraph CIJ["CI"]
+        direction LR
+        T1["Unitarias back y front"] --> T2["ArchitectureTest ArchUnit"] --> T3["Integración Testcontainers<br/>y OpenApiContractIT"] --> T4["E2E Playwright"]
+    end
+    CI --> CIJ
+    GH -->|"webhook"| VB["Vercel Build<br/>Dockerfile.vercel x2"]
+    VB --> VCR["Vercel Container Registry"]
+    VCR --> FEP["frontend<br/>(nginx :80)"]
+    VCR --> BEP["backend<br/>(Spring Boot :80)"]
+    CRON["Vercel Cron"] -->|"/api/internal/jobs/* con CRON_SECRET"| BEP
+    ENV["Variables en Vercel<br/>DB_URL, DB_USER, DB_PASSWORD, JWT_SECRET,<br/>CRON_SECRET, CORS_ALLOWED_ORIGINS,<br/>SPRING_PROFILES_ACTIVE"] -.-> BEP
+    BEP -->|"TLS"| AIV[("Aiven MySQL Free")]
+    BEP -.->|"logs a salida estándar"| LOGS["Registros de Vercel"]
+    SMOKE["Prueba de humo<br/>GET /api/actuator/health y @smoke"] -.-> BEP
+    subgraph Vercel
+        VB
+        VCR
+        FEP
+        BEP
+        CRON
+        LOGS
+    end
+    subgraph LOCAL["Local (docker compose)"]
+        LDB[("MySQL 8.4 :3306")]
+        LAPI["API :8080"]
+        LWEB["web :4200<br/>nginx reenvía /api"]
+        LWEB --> LAPI --> LDB
+    end
+    DEV -.->|"docker compose up"| LOCAL

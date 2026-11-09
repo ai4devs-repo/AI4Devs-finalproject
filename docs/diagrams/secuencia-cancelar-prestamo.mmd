@@ -1,0 +1,37 @@
+---
+title: Cancelar préstamo POST /api/loans/{id}/cancellation (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor ES as Estudiante
+    participant C as LoanController
+    participant S as LoanService
+    participant TS as LoanTransitionService
+    participant DB as MySQL
+    ES->>C: POST /api/loans/{id}/cancellation {reason opcional}
+    C->>C: @PreAuthorize ESTUDIANTE y @Valid (reason hasta 250)
+    C->>S: cancel(id, studentId, reason)
+    activate S
+    S->>DB: SELECT loans FOR UPDATE
+    alt el préstamo no es del titular
+        S-->>C: ForbiddenOperationException
+        C-->>ES: 403 ACCESS_DENIED "Acceso denegado"
+    else ya fue entregado
+        C-->>ES: 409 LOAN_ALREADY_DELIVERED "El préstamo ya fue entregado"
+    else fuera de la ventana de cancelación
+        Note over S: ventana con Clock: SOLICITADO con inicio hoy o posterior, APROBADO antes de pickup_deadline
+        C-->>ES: 409 LOAN_NOT_CANCELLABLE "El préstamo ya no se puede cancelar"
+    else dentro de la ventana
+        S->>S: motivo vacío se guarda como "Cancelado por usuario"
+        S->>TS: transition(SOLICITADO o APROBADO a CANCELADO)
+        TS->>DB: UPDATE loans WHERE id y status esperado
+        alt 0 filas (entrega o tarea programada simultánea)
+            TS-->>C: CONCURRENT_MODIFICATION
+            C-->>ES: 409
+        else 1 fila
+            TS->>DB: INSERT loan_status_history
+            S-->>C: LoanResponse
+            C-->>ES: 200 OK
+        end
+    end
+    deactivate S

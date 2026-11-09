@@ -1,0 +1,22 @@
+---
+title: Arquitectura (diseño)
+---
+flowchart LR
+    U["Usuario<br/>(navegador)"] -->|HTTPS| V["Vercel<br/>enrutamiento vercel.json"]
+    V -->|"/*"| FE["Servicio frontend<br/>Angular + nginx<br/>(contenedor)"]
+    V -->|"/api/*"| BE["Servicio backend<br/>Spring Boot API REST<br/>(contenedor)"]
+    CRON["Vercel Cron"] -->|"GET /api/internal/jobs/*<br/>Bearer CRON_SECRET"| BE
+    subgraph BEI["Backend por capas"]
+        direction LR
+        TRACE["RequestTraceFilter<br/>X-Request-Id y MDC"] --> SEC["SecurityFilterChain<br/>Resource Server JWT"]
+        SEC --> C["Controller /api<br/>Bean Validation y @PreAuthorize"]
+        C --> S["Service<br/>transacción y reglas"]
+        S --> R["Repository JPA"]
+        S --> M["Mapper MapStruct"]
+        S --- CA["Caché Caffeine<br/>categories, equipmentSummaries"]
+        EH["GlobalExceptionHandler<br/>ProblemDetail"] -.-> C
+        JOBS["Tareas programadas<br/>@Scheduled"] --> S
+    end
+    BE --- BEI
+    R -->|"JDBC + TLS"| DB[("MySQL 8<br/>Aiven")]
+    BE -.->|"Flyway al arrancar"| DB

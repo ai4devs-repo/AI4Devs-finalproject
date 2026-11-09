@@ -1,0 +1,48 @@
+---
+title: Renovación y cierre de sesión (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor U as Usuario
+    participant FE as Angular (AuthService, authInterceptor, Web Locks)
+    participant C as AuthController
+    participant RT as RefreshTokenService
+    participant DB as MySQL (users, refresh_tokens)
+    U->>FE: Acción con access token de 15 min vencido
+    FE->>C: GET /api/... con Bearer
+    C-->>FE: 401 UNAUTHENTICATED
+    FE->>FE: Una sola renovación compartida, serializada con Web Locks entre pestañas
+    FE->>C: POST /api/auth/refresh con cookie prestalab_rt
+    C->>RT: refresh(cookie, Origin)
+    RT->>DB: SELECT refresh_tokens WHERE token_hash FOR UPDATE
+    alt hash desconocido pero igual a previous_token_hash
+        RT->>DB: revoca la sesión (REUSE_DETECTED) y registra WARN
+        C-->>FE: 401 SESSION_EXPIRED y borra la cookie
+    else sesión desplazada (REPLACED)
+        C-->>FE: 401 SESSION_REPLACED y borra la cookie
+    else cerrada por un ADMIN o cuenta con deleted_at
+        RT->>DB: revoca con ACCOUNT_DISABLED si hace falta
+        C-->>FE: 401 SESSION_INVALIDATED y borra la cookie
+    else vencida por 30 min de inactividad o vida máxima, o cerrada con LOGOUT
+        RT->>DB: revoca con EXPIRED si hace falta
+        C-->>FE: 401 SESSION_EXPIRED y borra la cookie
+        FE-->>U: Vuelve al inicio de sesión con el mensaje
+    else sesión válida
+        RT->>DB: lee users (rol y deleted_at)
+        RT->>DB: rota: previous_token_hash = token_hash, nuevo token_hash, rotation_count + 1, expires_at = MIN(ahora + 30 min, session_expires_at)
+        RT-->>C: AuthResponse
+        C-->>FE: 200 con access token nuevo y Set-Cookie rotada
+        FE->>C: reintenta la petición original una sola vez
+        C-->>FE: respuesta de la petición
+    end
+    Note over FE: Rotación por actividad (como mucho una por minuto) y cierre local a los 30 min sin actividad
+    Note over FE: Aviso 5 min antes de sessionExpiresAt (ESTUDIANTE a los 55 min)
+    opt recarga de página
+        FE->>C: POST /api/auth/refresh al arrancar (renovación silenciosa)
+        C-->>FE: 200 restaura la sesión o 401 muestra el inicio de sesión
+    end
+    U->>FE: Cerrar sesión
+    FE->>C: POST /api/auth/logout con cookie
+    C->>RT: logout(cookie)
+    RT->>DB: revoca la sesión (LOGOUT), idempotente
+    C-->>FE: 204 y cookie borrada (Max-Age 0)

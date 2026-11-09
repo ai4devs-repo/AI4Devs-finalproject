@@ -1,0 +1,42 @@
+---
+title: Tareas programadas (diseño)
+---
+sequenceDiagram
+    autonumber
+    participant SCH as "@Scheduled"
+    participant VC as Vercel Cron
+    participant IJ as InternalJobController
+    participant J as Job (PickupExpiration, DailyLoanReview, DueSoonAlert)
+    participant TS as LoanTransitionService
+    participant N as notifications (oyente)
+    participant DB as MySQL
+    par disparo en proceso
+        SCH->>J: ejecuta en la zona de la institución
+    and disparo externo
+        VC->>IJ: GET /api/internal/jobs/{job} con Bearer CRON_SECRET
+        alt secreto incorrecto
+            IJ-->>VC: 401 INVALID_CRON_SECRET "No autorizado" (comparación en tiempo constante)
+        else secreto correcto
+            IJ->>J: ejecuta
+            IJ-->>VC: 204
+        end
+    end
+    J->>J: MDC requestId job-nombre-uuid y userId SYSTEM
+    J->>DB: selecciona todo lo pendiente hasta ahora
+    Note over J,DB: PickupExpiration: APROBADO con pickup_deadline vencido<br/>DailyLoanReview 00:05: SOLICITADO con inicio pasado y ENTREGADO con fin efectivo pasado
+    loop cada préstamo, una transacción corta
+        J->>TS: transition(loan, estado nuevo, SYSTEM)
+        TS->>DB: UPDATE WHERE id y status esperado
+        alt 0 filas (otra instancia ya lo procesó)
+            TS-->>J: sin historial, evento ni alertas
+        else 1 fila
+            TS->>DB: INSERT loan_status_history (changed_by NULL)
+            TS->>N: LoanStatusChangedEvent
+            N->>DB: alertas únicas por destinatario, préstamo y tipo
+            Note right of N: NO_RECOGIDO a todos los ENCARGADO y al titular<br/>SIN_RESOLVER_A_TIEMPO al titular<br/>PRESTAMO_VENCIDO a ENCARGADO y ADMIN
+        end
+    end
+    opt DueSoonAlertJob 00:05
+        J->>DB: ENTREGADO con fin efectivo mañana, alerta PROXIMO_A_VENCER
+    end
+    J->>J: registra inicio, cantidades procesadas y duración

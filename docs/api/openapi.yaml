@@ -1,0 +1,1359 @@
+openapi: 3.0.1
+info:
+  title: PrestaLab API
+  version: 1.1.0
+  description: |
+    **Contrato de diseño** de la API REST de PrestaLab (ADR 0001, revisión 6, Anexo A, y `docs/historias-de-usuario.md`).
+    Aún no existe el código del backend: este archivo lo escribe el diseño y no lo genera springdoc.
+    Cuando exista el código, la prueba `OpenApiContractIT` (perfil `integration`) compara el OpenAPI generado por springdoc
+    en `/api/docs/v3/api-docs.yaml` con este archivo y falla si difieren. Para regenerarlo a propósito:
+    `./mvnw verify -Pintegration -Dopenapi.update=true`.
+
+    Convenciones:
+    - Todas las rutas cuelgan de `/api`. Swagger UI en `/api/docs`; la especificación en `/api/docs/v3/api-docs` y `/api/docs/v3/api-docs.yaml`.
+      Las rutas de documentación y `GET /api/actuator/health` (público, solo `health`) no forman parte de este contrato.
+    - Fechas de negocio (`date`): `YYYY-MM-DD`. Instantes (`date-time`): ISO 8601 con el desplazamiento de la zona de la institución
+      (`America/Bogota`), por ejemplo `2026-11-03T14:22:05-05:00`.
+    - Los errores usan `application/problem+json` (`ProblemDetail`) con `code` estable, `requestId` y `timestamp`. El frontend decide por `code`;
+      `detail` es el texto para la persona usuaria. Toda respuesta incluye la cabecera `X-Request-Id`.
+    - Los listados devuelven `PageResponse` (índice de página desde 0, tamaño por defecto 20, máximo 50) y ordenan por una lista blanca por endpoint.
+    - Toda operación autenticada puede responder 401 `UNAUTHENTICATED` (token ausente o vencido). Desde la revisión 7, toda operación autenticada, consultas incluidas y de cualquier rol,
+      puede responder además 401 `SESSION_INVALIDATED` (cuenta dada de baja o sesión cerrada por un ADMIN), `SESSION_REPLACED` (sesión desplazada)
+      o `SESSION_EXPIRED` (sesión cerrada por el usuario o vencida), por la comprobación de cuenta y sesión. Las operaciones
+      protegidas pueden responder 403 `ACCESS_DENIED` y 500 `INTERNAL_ERROR`.
+    - Mensajes de inicio de sesión: ante cualquier fallo (contraseña incorrecta, correo inexistente, cuenta dada de baja o bloqueada) la respuesta es
+      siempre 401 `INVALID_CREDENTIALS` con "Credenciales inválidas".
+    - Los textos de `detail` son los de las historias de usuario.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Autenticación
+    description: Registro, inicio de sesión, renovación y cierre de sesión.
+  - name: Cuentas
+    description: Administración de cuentas (rol ADMIN).
+  - name: Catálogo
+    description: Categorías y equipos.
+  - name: Préstamos
+    description: Solicitudes de préstamo y su ciclo de vida.
+  - name: Alertas
+    description: Notificaciones dentro de la aplicación.
+  - name: Reportes
+    description: Métricas y exportaciones CSV.
+  - name: Tareas internas
+    description: Disparadores de las tareas programadas para Vercel Cron.
+paths:
+  /api/auth/register:
+    post:
+      tags: [Autenticación]
+      operationId: register
+      summary: Registra una cuenta de estudiante (HU-01a)
+      description: El registro siempre crea una cuenta con rol ESTUDIANTE. Es la única excepción a la regla de no revelación; el límite por origen de conexión también se aplica aquí.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Cuenta creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400':
+          description: 'VALIDATION_ERROR "La solicitud tiene datos inválidos" con errors[] ("Usa tu correo institucional", "La contraseña debe tener al menos 8 caracteres, una letra y un número").'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '409':
+          description: 'EMAIL_ALREADY_REGISTERED "Ya existe una cuenta asociada a ese correo" (incluye cuentas dadas de baja).'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '429':
+          description: 'TOO_MANY_ATTEMPTS "Demasiados intentos. Inténtalo de nuevo más tarde".'
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/auth/login:
+    post:
+      tags: [Autenticación]
+      operationId: login
+      summary: Inicia sesión (límite de 3 intentos, una sola sesión activa)
+      description: |
+        Valida credenciales, aplica el límite de intentos (3 fallos consecutivos bloquean la cuenta 15 minutos; 10 fallos por origen cada 15 minutos),
+        aplica la regla de sesión única, crea la sesión y fija la cookie `prestalab_rt`.
+        No valida el formato ni el dominio del correo: solo presencia y longitud máxima.
+        Vida máxima de la sesión: 1 h ESTUDIANTE, 8 h ENCARGADO y ADMIN.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Sesión iniciada; fija la cookie prestalab_rt
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetRefreshCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':
+          description: 'VALIDATION_ERROR, solo por campos vacíos o demasiado largos.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '401':
+          description: 'INVALID_CREDENTIALS "Credenciales inválidas". Idéntico para contraseña incorrecta, correo inexistente, cuenta dada de baja y cuenta bloqueada, sin extensiones y con tiempo de respuesta igualado.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetail' }
+              example:
+                type: https://prestalab/errors/invalid-credentials
+                title: Credenciales inválidas
+                status: 401
+                detail: Credenciales inválidas
+                instance: /api/auth/login
+                code: INVALID_CREDENTIALS
+                requestId: 9f1c2a7e-0b4d-4c55-9d0e-3f8a1b2c3d4e
+                timestamp: '2026-11-03T14:22:05-05:00'
+        '409':
+          description: 'ACTIVE_SESSION_EXISTS "Ya tienes una sesión activa en otro lugar", solo con credenciales correctas. Extensión activeSession {startedAt, lastActivityAt}. Para continuar, repetir el inicio de sesión con replaceExistingSession true.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetail' }
+              example:
+                type: https://prestalab/errors/active-session-exists
+                title: Sesión activa
+                status: 409
+                detail: Ya tienes una sesión activa en otro lugar
+                instance: /api/auth/login
+                code: ACTIVE_SESSION_EXISTS
+                requestId: 3b6f0c1e-7a54-4d0b-8c0e-6e0a4f6b9d21
+                timestamp: '2026-11-03T14:22:05-05:00'
+                activeSession: { startedAt: '2026-11-03T13:40:00-05:00', lastActivityAt: '2026-11-03T14:10:12-05:00' }
+        '429':
+          description: 'TOO_MANY_ATTEMPTS "Demasiados intentos. Inténtalo de nuevo más tarde". Se decide por origen de conexión antes de buscar la cuenta.'
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/auth/refresh:
+    post:
+      tags: [Autenticación]
+      operationId: refresh
+      summary: Renueva el access token y rota el refresh token
+      description: |
+        Sin cuerpo. Usa la cookie `prestalab_rt`; cada refresh token sirve una sola vez. Rechaza con 403 toda petición cuyo `Origin` no sea el propio sitio.
+        Si el refresh token ya rotado se presenta de nuevo (reutilización), revoca la sesión.
+      security:
+        - refreshCookie: []
+      responses:
+        '200':
+          description: Sesión renovada; cookie rotada
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetRefreshCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401':
+          description: 'SESSION_EXPIRED "Tu sesión expiró. Inicia sesión de nuevo" (ausente, desconocido, vencido por inactividad o vida máxima, cerrado por el usuario o reutilizado); SESSION_REPLACED "Tu sesión fue cerrada porque iniciaste sesión en otro lugar" (desplazada por otro inicio de sesión); o SESSION_INVALIDATED "Tu sesión ya no es válida. Inicia sesión de nuevo" (cerrada por un ADMIN o cuenta dada de baja). En todos los casos la cookie se borra y el motivo real solo va al log.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '403':
+          description: 'ACCESS_DENIED "Acceso denegado" por Origin ajeno.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/auth/logout:
+    post:
+      tags: [Autenticación]
+      operationId: logout
+      summary: Cierra la sesión
+      description: Revoca la sesión en el servidor y borra la cookie. Es idempotente, incluso sin cookie o con una cookie inválida.
+      security:
+        - refreshCookie: []
+        - {}
+      responses:
+        '204':
+          description: Sesión cerrada; cookie borrada (Max-Age 0)
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/ClearRefreshCookie' }
+        '403':
+          description: 'ACCESS_DENIED "Acceso denegado" por Origin ajeno.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/auth/me:
+    get:
+      tags: [Autenticación]
+      operationId: me
+      summary: Devuelve la cuenta autenticada
+      responses:
+        '200':
+          description: Datos de la cuenta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users:
+    get:
+      tags: [Cuentas]
+      operationId: listUsers
+      summary: Lista las cuentas, activas y dadas de baja (rol ADMIN)
+      description: 'Búsqueda por nombre o correo, por rol y por estado (RN-SH08.7). Incluye las cuentas dadas de baja, con su `status` y `deactivatedAt`. Orden permitido en `sort`: `fullName` (por defecto) y `createdAt`.'
+      parameters:
+        - { name: q, in: query, description: Texto en el nombre o el correo, schema: { type: string, maxLength: 150 } }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+        - { name: status, in: query, description: Estado de la cuenta; sin valor devuelve ambas., schema: { $ref: '#/components/schemas/UserStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: sort, in: query, description: 'fullName (por defecto) o createdAt, con dirección opcional', schema: { type: string, example: 'fullName,asc' } }
+      responses:
+        '200':
+          description: Página de cuentas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAdminPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users/by-email:
+    get:
+      tags: [Cuentas]
+      operationId: getUserByEmail
+      summary: Localiza una cuenta por su correo exacto (rol ADMIN)
+      description: 'Devuelve la cuenta activa o dada de baja con ese correo (RN-SH08.7, RN-SH12.2).'
+      parameters:
+        - { name: email, in: query, required: true, description: Correo exacto., schema: { type: string, maxLength: 150 } }
+      responses:
+        '200':
+          description: Cuenta encontrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAdminResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 'USER_NOT_FOUND "Usuario no encontrado".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users/{id}:
+    delete:
+      tags: [Cuentas]
+      operationId: deactivateUser
+      summary: Da de baja una cuenta (baja lógica, rol ADMIN)
+      description: |
+        Marca la baja lógica (`deleted_at`, `deactivated_by`) y revoca la sesión vigente (motivo interno `ACCOUNT_DISABLED`; la persona recibe `SESSION_INVALIDATED`).
+        Reglas en este orden: 404 si no existe; 200 idempotente si ya está dada de baja; `LAST_ADMIN`; `CANNOT_DEACTIVATE_SELF`; `USER_HAS_LOANS_IN_PROGRESS`.
+        Se rechaza si el titular tiene algún préstamo en curso (SOLICITADO, APROBADO, ENTREGADO o VENCIDO). No cancela ni modifica ningún préstamo.
+        El correo sigue reservado: no hay reactivación.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '200':
+          description: 'Cuenta dada de baja. Si ya estaba dada de baja, la operación es idempotente: responde 200 con su `deactivatedAt` original y `sessionRevoked` false.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserDeactivationResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 'USER_NOT_FOUND "Usuario no encontrado" (la cuenta no existe).'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '409':
+          description: |
+            LAST_ADMIN "Debe existir al menos un administrador activo" (prevalece si se cumplen ambas);
+            CANNOT_DEACTIVATE_SELF "No puedes darte de baja a ti mismo";
+            USER_HAS_LOANS_IN_PROGRESS "La cuenta tiene préstamos en curso" con la extensión loans[] {loanId, status, startDate, endDate}.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetail' }
+              example:
+                type: https://prestalab/errors/user-has-loans-in-progress
+                title: La cuenta tiene préstamos en curso
+                status: 409
+                detail: La cuenta tiene préstamos en curso
+                instance: /api/users/31
+                code: USER_HAS_LOANS_IN_PROGRESS
+                requestId: 5d2e9b40-1c3a-4f7e-9a6b-2b7c8d9e0f11
+                timestamp: '2026-11-03T14:22:05-05:00'
+                loans:
+                  - { loanId: 154, status: APROBADO, startDate: '2026-11-10', endDate: '2026-11-12' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users/{id}/session:
+    delete:
+      tags: [Cuentas]
+      operationId: closeUserSession
+      summary: Cierra la sesión vigente de una cuenta (rol ADMIN)
+      description: 'Revoca la sesión vigente con `CLOSED_BY_ADMIN`; la persona recibe 401 `SESSION_INVALIDATED` al usarla y puede volver a iniciar sesión con sus credenciales (SH-12). Sin sesión vigente responde 409 `NO_ACTIVE_SESSION`; una sesión vencida pero no revocada se revoca con `EXPIRED` y también responde 409. Un ADMIN puede cerrar su propia sesión por esta vía.'
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '204': { description: Sesión cerrada (revocada con CLOSED_BY_ADMIN) }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 'USER_NOT_FOUND "Usuario no encontrado".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '409':
+          description: 'NO_ACTIVE_SESSION "La cuenta no tiene sesión activa".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/categories:
+    get:
+      tags: [Catálogo]
+      operationId: listCategories
+      summary: Lista las categorías (cacheada)
+      description: Sin paginar (lista pequeña, solo por semillas). Responde `Cache-Control private, max-age=300`.
+      responses:
+        '200':
+          description: Categorías
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CategoryResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/equipment:
+    get:
+      tags: [Catálogo]
+      operationId: searchEquipment
+      summary: Busca equipos y calcula su disponibilidad para un rango de fechas
+      description: |
+        Disponible para ESTUDIANTE, ENCARGADO y ADMIN (HU-03). Los equipos dados de baja no aparecen; los equipos en MANTENIMIENTO aparecen como "No disponible".
+        El rango cumple: fin no anterior al inicio, inicio no anterior a hoy y máximo 7 días contando ambos extremos.
+        Orden permitido en `sort`: `name`.
+      parameters:
+        - { name: q, in: query, description: Texto en el nombre (coincidencia parcial sin distinguir mayúsculas), schema: { type: string, maxLength: 120 } }
+        - { name: categoryId, in: query, schema: { type: integer, format: int64 } }
+        - { name: from, in: query, required: true, description: Inicio del rango, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, description: 'Fin del rango (incluido). Rango de máximo 7 días contando ambos extremos: fin hasta 6 días después del inicio.', schema: { type: string, format: date } }
+        - { $ref: '#/components/parameters/Page' }
+        - { name: size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 12 } }
+        - { name: sort, in: query, schema: { type: string, example: 'name,asc' } }
+      responses:
+        '200':
+          description: Página de equipos con unidades disponibles
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EquipmentAvailabilityPage' }
+        '400':
+          description: 'VALIDATION_ERROR con errors[]: "La fecha fin no puede ser anterior a la fecha inicio", "La fecha de inicio no puede ser anterior a hoy", "El rango máximo es de 7 días".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      tags: [Catálogo]
+      operationId: createEquipment
+      summary: Crea un equipo (ENCARGADO o ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EquipmentRequest' }
+      responses:
+        '201':
+          description: Equipo creado
+          headers:
+            Location: { description: URL del equipo creado, schema: { type: string, example: /api/equipment/7 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EquipmentResponse' }
+        '400':
+          description: 'VALIDATION_ERROR con errors[], por ejemplo "Las unidades deben ser al menos 1".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 'INVENTORY_CODE_EXISTS "El código de inventario ya existe" (incluye equipos dados de baja).'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/equipment/inventory:
+    get:
+      tags: [Catálogo]
+      operationId: listInventory
+      summary: Lista el inventario (ENCARGADO o ADMIN)
+      description: 'Orden permitido en `sort`: `name` (por defecto) e `inventoryCode`. Excluye equipos dados de baja.'
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 120 } }
+        - { name: categoryId, in: query, schema: { type: integer, format: int64 } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/EquipmentStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: sort, in: query, schema: { type: string, example: 'inventoryCode,asc' } }
+      responses:
+        '200':
+          description: Página de equipos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EquipmentPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/equipment/{id}:
+    get:
+      tags: [Catálogo]
+      operationId: getEquipment
+      summary: Detalle de un equipo (ENCARGADO o ADMIN)
+      description: Incluye las unidades comprometidas y `version` para la edición con bloqueo optimista.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '200':
+          description: Equipo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EquipmentResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 'EQUIPMENT_NOT_FOUND "Equipo no encontrado".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      tags: [Catálogo]
+      operationId: updateEquipment
+      summary: Edita un equipo (ENCARGADO o ADMIN)
+      description: Requiere `version`. Las unidades totales no pueden bajar de las comprometidas.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EquipmentRequest' }
+      responses:
+        '200':
+          description: Equipo actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EquipmentResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 'EQUIPMENT_NOT_FOUND "Equipo no encontrado".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '409':
+          description: |
+            COMMITTED_UNITS "Hay {n} unidades comprometidas";
+            INVENTORY_CODE_EXISTS "El código de inventario ya existe";
+            CONCURRENT_MODIFICATION "Otra operación modificó este registro. Actualiza e intenta de nuevo".
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Catálogo]
+      operationId: retireEquipment
+      summary: Da de baja un equipo (baja lógica, ENCARGADO o ADMIN)
+      description: Rechaza automáticamente las solicitudes SOLICITADO del equipo con el motivo "Equipo dado de baja". No procede si el equipo tiene préstamos activos.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '200':
+          description: Equipo dado de baja
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EquipmentRetirementResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 'EQUIPMENT_NOT_FOUND "Equipo no encontrado".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '409':
+          description: 'EQUIPMENT_HAS_ACTIVE_LOANS "El equipo tiene préstamos activos"; CONCURRENT_MODIFICATION.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans:
+    post:
+      tags: [Préstamos]
+      operationId: createLoan
+      summary: Crea una solicitud de préstamo (rol ESTUDIANTE)
+      description: |
+        La solicitud se registra completa o no se registra. Nace en SOLICITADO y no retiene unidades hasta ser aprobada.
+        Máximo 3 préstamos en curso por estudiante (las SOLICITADO cuentan). Rango de máximo 7 días contando ambos extremos;
+        se permite iniciar el mismo día.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoanRequest' }
+      responses:
+        '201':
+          description: Préstamo creado en estado SOLICITADO
+          headers:
+            Location: { description: URL del préstamo creado, schema: { type: string, example: /api/loans/154 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanResponse' }
+        '400':
+          description: 'VALIDATION_ERROR con errors[]: "La cantidad debe ser al menos 1", "La fecha fin no puede ser anterior a la fecha inicio", "La fecha de inicio no puede ser anterior a hoy", "El rango máximo es de 7 días".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '401':
+          description: 'UNAUTHENTICATED "Debes iniciar sesión", o SESSION_INVALIDATED / SESSION_REPLACED / SESSION_EXPIRED por la comprobación de cuenta y sesión (una cuenta dada de baja justo antes de crear la solicitud recibe SESSION_INVALIDATED y no se crea nada).'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: |
+            INSUFFICIENT_UNITS "Unidades insuficientes" con items[] {equipmentId, name, requested, available};
+            EQUIPMENT_UNAVAILABLE "Equipo no disponible" (en mantenimiento, dado de baja o inexistente);
+            LOAN_LIMIT_REACHED "Ya tienes 3 préstamos en curso";
+            STUDENT_BLOCKED "Podrás volver a solicitar el {fecha}" con blockedUntil;
+            OVERDUE_LOAN_PENDING "Tienes un préstamo vencido pendiente de devolución";
+            CONCURRENT_MODIFICATION "Otra operación modificó este registro. Actualiza e intenta de nuevo".
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetail' }
+              example:
+                type: https://prestalab/errors/insufficient-units
+                title: Unidades insuficientes
+                status: 409
+                detail: Unidades insuficientes
+                instance: /api/loans
+                code: INSUFFICIENT_UNITS
+                requestId: 9f1c2a7e-0b4d-4c55-9d0e-3f8a1b2c3d4e
+                timestamp: '2026-11-03T14:22:05-05:00'
+                items:
+                  - { equipmentId: 12, name: Trípode Manfrotto, requested: 2, available: 1 }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [Préstamos]
+      operationId: listLoans
+      summary: Lista los préstamos (bandeja de ENCARGADO o ADMIN)
+      description: 'El rango compara contra la fecha de inicio, extremos incluidos. Orden permitido en `sort`: `startDate` (por defecto, ascendente) y `createdAt`.'
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/LoanStatus' } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: sort, in: query, schema: { type: string, example: 'startDate,asc' } }
+      responses:
+        '200':
+          description: Página de préstamos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanSummaryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/mine:
+    get:
+      tags: [Préstamos]
+      operationId: listMyLoans
+      summary: Lista mis préstamos (rol ESTUDIANTE)
+      description: 'Solo los del titular. Filtros opcionales y combinables por estado y rango de fechas de inicio. Orden permitido en `sort`: `startDate` (por defecto, descendente) y `createdAt`.'
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/LoanStatus' } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: sort, in: query, schema: { type: string, example: 'startDate,desc' } }
+      responses:
+        '200':
+          description: Página de préstamos del titular
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanSummaryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/mine/eligibility:
+    get:
+      tags: [Préstamos]
+      operationId: getMyEligibility
+      summary: Indica si el estudiante puede solicitar (rol ESTUDIANTE)
+      description: Préstamos en curso frente al límite de 3, fecha hasta la que está bloqueado por sanción y si tiene un préstamo vencido sin devolver.
+      responses:
+        '200':
+          description: Elegibilidad del estudiante
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanEligibilityResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/{id}:
+    get:
+      tags: [Préstamos]
+      operationId: getLoan
+      summary: Detalle de un préstamo (titular, ENCARGADO o ADMIN)
+      description: Incluye ítems, motivo e historial de estados. Un ESTUDIANTE que consulta un préstamo ajeno recibe 404.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '200':
+          description: Préstamo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: 'LOAN_NOT_FOUND "Préstamo no encontrado" (también para un préstamo ajeno consultado por un ESTUDIANTE).'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/{id}/approval:
+    post:
+      tags: [Préstamos]
+      operationId: approveLoan
+      summary: Aprueba una solicitud (ENCARGADO o ADMIN)
+      description: |
+        Solo SOLICITADO, dentro del horario de aprobaciones (8:00 AM a 5:00 PM) y con inicio no anterior a hoy.
+        Comprueba la disponibilidad actual y deja las unidades retenidas. Calcula `pickupDeadline`.
+        Sin cuerpo.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '200':
+          description: Préstamo aprobado (incluye pickupDeadline)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LoanNotFound' }
+        '409':
+          description: |
+            LOAN_NOT_PENDING "Solo se resuelven solicitudes pendientes";
+            LOAN_ALREADY_ENDED "La solicitud ya terminó";
+            LOAN_ALREADY_STARTED "La solicitud ya inició";
+            OUTSIDE_APPROVAL_HOURS "Las aprobaciones se hacen de 8:00 AM a 5:00 PM";
+            INSUFFICIENT_UNITS "Unidades insuficientes" con items[];
+            EQUIPMENT_UNAVAILABLE "Equipo no disponible" (equipo en mantenimiento);
+            CONCURRENT_MODIFICATION "Otra operación modificó este registro. Actualiza e intenta de nuevo".
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/{id}/rejection:
+    post:
+      tags: [Préstamos]
+      operationId: rejectLoan
+      summary: Rechaza una solicitud con motivo (ENCARGADO o ADMIN)
+      description: Solo SOLICITADO. Un préstamo APROBADO no se rechaza manualmente. El motivo es visible para el estudiante.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoanRejectionRequest' }
+      responses:
+        '200':
+          description: Préstamo rechazado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanResponse' }
+        '400':
+          description: 'VALIDATION_ERROR con errors[]: "El motivo debe tener entre 10 y 250 caracteres".'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LoanNotFound' }
+        '409':
+          description: 'LOAN_NOT_PENDING "Solo se resuelven solicitudes pendientes"; CONCURRENT_MODIFICATION.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/{id}/delivery:
+    post:
+      tags: [Préstamos]
+      operationId: deliverLoan
+      summary: Registra la entrega (ENCARGADO o ADMIN)
+      description: |
+        Solo APROBADO y dentro del plazo de recogida. Registra fecha, hora y encargado.
+        Una entrega posterior a la fecha fin deja la fecha fin efectiva igual al día de la entrega. Sin cuerpo.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '200':
+          description: Préstamo entregado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LoanNotFound' }
+        '409':
+          description: |
+            LOAN_NOT_APPROVED "Solo se entregan préstamos aprobados";
+            LOAN_NOT_STARTED "El préstamo aún no inicia";
+            SERVICE_NOT_STARTED "El servicio inicia a las 8:00 AM";
+            INSUFFICIENT_UNITS "Unidades insuficientes" (el total actual del equipo no cubre lo prestado);
+            CONCURRENT_MODIFICATION.
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/{id}/return:
+    post:
+      tags: [Préstamos]
+      operationId: returnLoan
+      summary: Registra la devolución (ENCARGADO o ADMIN)
+      description: |
+        Solo ENTREGADO o VENCIDO. Por cada equipo, las líneas indican cuántas unidades quedan en cada condición
+        (BUENO, CON_DESPERFECTOS, DANADO, PERDIDO) y la suma debe igualar lo prestado. La observación es obligatoria
+        en toda línea que no sea BUENO. Las unidades DANADO o PERDIDO se restan del total del equipo.
+        La respuesta incluye los préstamos APROBADO afectados por esa resta (`affectedApprovedLoans`), solo informativos.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoanReturnRequest' }
+      responses:
+        '200':
+          description: Préstamo devuelto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanReturnResponse' }
+        '400':
+          description: |
+            VALIDATION_ERROR con errors[] ("La observación es obligatoria");
+            RETURN_QUANTITIES_MISMATCH "Las unidades indicadas no coinciden con las prestadas".
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LoanNotFound' }
+        '409':
+          description: 'LOAN_NOT_DELIVERED "El préstamo no ha sido entregado"; CONCURRENT_MODIFICATION.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/loans/{id}/cancellation:
+    post:
+      tags: [Préstamos]
+      operationId: cancelLoan
+      summary: Cancela mi solicitud (rol ESTUDIANTE, titular)
+      description: |
+        Solo mientras la solicitud aún puede resolverse: SOLICITADO con inicio hoy o posterior (hasta el día de inicio incluido)
+        o APROBADO con `ahora < pickupDeadline`. El motivo es opcional (hasta 250 caracteres); sin motivo queda "Cancelado por usuario".
+        Las solicitudes se cancelan completas.
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoanCancellationRequest' }
+      responses:
+        '200':
+          description: Préstamo cancelado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: 'ACCESS_DENIED "Acceso denegado" (el préstamo es de otra persona o el rol no es ESTUDIANTE).'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '404': { $ref: '#/components/responses/LoanNotFound' }
+        '409':
+          description: |
+            LOAN_ALREADY_DELIVERED "El préstamo ya fue entregado" (ENTREGADO);
+            LOAN_NOT_CANCELLABLE "El préstamo ya no se puede cancelar" (resto de estados, incluidos SOLICITADO con inicio pasado
+            y APROBADO con plazo vencido aunque la tarea programada aún no los haya cerrado);
+            CONCURRENT_MODIFICATION.
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/notifications:
+    get:
+      tags: [Alertas]
+      operationId: listNotifications
+      summary: Lista mis alertas
+      description: 'Solo las propias. Orden fijo: `createdAt` descendente.'
+      parameters:
+        - { name: unreadOnly, in: query, schema: { type: boolean, default: false } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: Página de alertas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/notifications/unread-count:
+    get:
+      tags: [Alertas]
+      operationId: unreadCount
+      summary: Cuenta mis alertas no leídas
+      responses:
+        '200':
+          description: Conteo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UnreadCountResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/notifications/{id}/read:
+    post:
+      tags: [Alertas]
+      operationId: markNotificationRead
+      summary: Marca una alerta como leída (destinatario)
+      parameters:
+        - { $ref: '#/components/parameters/IdPath' }
+      responses:
+        '204': { description: Alerta marcada como leída }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: 'NOTIFICATION_NOT_FOUND "Alerta no encontrada". También cuando la alerta es de otra persona: no se revela que existe.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/reports/metrics:
+    get:
+      tags: [Reportes]
+      operationId: getMetrics
+      summary: Panel de métricas (rol ADMIN)
+      description: |
+        Ranking de los 10 equipos con más préstamos entregados, número de préstamos VENCIDO y porcentaje de ocupación en el rango.
+        El ranking y los vencidos se calculan sobre los préstamos cuya fecha de inicio cae en el rango, extremos incluidos.
+        Sin datos en el periodo la UI muestra "Sin datos en el periodo". Sin paginar (ranking fijo de 10).
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Métricas del rango
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricsResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/reports/inventory.csv:
+    get:
+      tags: [Reportes]
+      operationId: exportInventoryCsv
+      summary: Exporta el inventario a CSV (ENCARGADO o ADMIN)
+      description: 'Columnas: código de inventario, nombre, categoría, unidades totales y estado. Excluye equipos dados de baja. Se genera en streaming. Sin resultados, solo la fila de columnas.'
+      responses:
+        '200':
+          description: Archivo CSV
+          headers:
+            Content-Disposition: { schema: { type: string, example: 'attachment; filename="inventario.csv"' } }
+          content:
+            text/csv:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/reports/loans.csv:
+    get:
+      tags: [Reportes]
+      operationId: exportLoansCsv
+      summary: Exporta los préstamos a CSV (ENCARGADO o ADMIN)
+      description: 'Columnas: identificador, correo del estudiante, equipos y cantidades, fecha inicio, fecha fin, estado, fecha de entrega y fecha de devolución. Filtros opcionales y combinables; el rango compara contra la fecha de inicio. Se genera en streaming.'
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/LoanStatus' } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Archivo CSV
+          headers:
+            Content-Disposition: { schema: { type: string, example: 'attachment; filename="prestamos.csv"' } }
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/internal/jobs/{job}:
+    get:
+      tags: [Tareas internas]
+      operationId: runJob
+      summary: Ejecuta una tarea programada (Vercel Cron)
+      description: |
+        Protegido con `Authorization: Bearer ${CRON_SECRET}`; no usa el access token. Vercel Cron invoca con GET; las tareas son idempotentes.
+        `daily-review` (00:05): rechaza las SOLICITADO con día de inicio pasado ("Sin resolver a tiempo"), marca VENCIDO los ENTREGADO con fecha fin efectiva pasada y genera las alertas de próximo a vencer.
+        `pickup-expiration`: cierra como "No recogido" los APROBADO con plazo de recogida vencido.
+      security:
+        - cronSecret: []
+      parameters:
+        - { name: job, in: path, required: true, schema: { type: string, enum: [daily-review, pickup-expiration] } }
+      responses:
+        '204': { description: Tarea ejecutada }
+        '401':
+          description: 'INVALID_CRON_SECRET "No autorizado": secreto ausente o incorrecto (comparación en tiempo constante). Sin más detalle ni cabecera WWW-Authenticate.'
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetail' } } }
+        '404':
+          description: 'Solo tras validar el secreto: la tarea `{job}` no existe.'
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token JWT HS256 de 15 min (claims sub, role, sid, iss, iat, exp). Solo vive en la memoria del navegador.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: prestalab_rt
+      description: 'Refresh token opaco de un solo uso, HttpOnly, Secure, SameSite=Strict, Path=/api/auth. Solo lo usan /api/auth/refresh y /api/auth/logout.'
+    cronSecret:
+      type: http
+      scheme: bearer
+      description: Valor de CRON_SECRET, solo para /api/internal/**.
+  headers:
+    RetryAfter:
+      description: Segundos hasta que se pueda reintentar.
+      schema: { type: integer }
+    SetRefreshCookie:
+      description: 'prestalab_rt; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age igual a la expiración del refresh token'
+      schema: { type: string }
+    ClearRefreshCookie:
+      description: 'prestalab_rt=; Max-Age=0; HttpOnly; Secure; SameSite=Strict; Path=/api/auth'
+      schema: { type: string }
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    Page:
+      name: page
+      in: query
+      description: Índice de página desde 0.
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      description: Tamaño de página; un valor mayor que 50 se recorta.
+      schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+  responses:
+    Unauthorized:
+      description: 'UNAUTHENTICATED "Debes iniciar sesión"; o, por la comprobación de cuenta y sesión que se hace en toda petición autenticada (consultas incluidas), SESSION_INVALIDATED "Tu sesión ya no es válida. Inicia sesión de nuevo" (cuenta dada de baja o sesión cerrada por un ADMIN), SESSION_REPLACED "Tu sesión fue cerrada porque iniciaste sesión en otro lugar" o SESSION_EXPIRED "Tu sesión expiró. Inicia sesión de nuevo".'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    Forbidden:
+      description: 'ACCESS_DENIED "Acceso denegado".'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    ValidationError:
+      description: 'VALIDATION_ERROR "La solicitud tiene datos inválidos" con errors[] por campo, o MALFORMED_REQUEST "La solicitud no tiene un formato válido".'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    LoanNotFound:
+      description: 'LOAN_NOT_FOUND "Préstamo no encontrado".'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+    InternalError:
+      description: 'INTERNAL_ERROR "Ocurrió un error inesperado. Código de referencia: {requestId}". Sin trazas internas.'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+  schemas:
+    Role:
+      type: string
+      enum: [ESTUDIANTE, ENCARGADO, ADMIN]
+    LoanStatus:
+      type: string
+      enum: [SOLICITADO, APROBADO, RECHAZADO, CANCELADO, ENTREGADO, VENCIDO, DEVUELTO]
+    EquipmentStatus:
+      type: string
+      description: La baja de un equipo no es un estado (es `deleted_at`). MANTENIMIENTO se muestra "No disponible".
+      enum: [DISPONIBLE, MANTENIMIENTO]
+    ReturnCondition:
+      type: string
+      description: La interfaz muestra DANADO como "DAÑADO".
+      enum: [BUENO, CON_DESPERFECTOS, DANADO, PERDIDO]
+    ClosureReason:
+      type: string
+      enum: [RECHAZO_MANUAL, NO_RECOGIDO, SIN_RESOLVER_A_TIEMPO, EQUIPO_DADO_DE_BAJA, CANCELACION_USUARIO]
+    NotificationType:
+      type: string
+      enum: [PRESTAMO_VENCIDO, PROXIMO_A_VENCER, NO_RECOGIDO, SIN_RESOLVER_A_TIEMPO]
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_ERROR
+        - MALFORMED_REQUEST
+        - RETURN_QUANTITIES_MISMATCH
+        - UNAUTHENTICATED
+        - INVALID_CREDENTIALS
+        - SESSION_EXPIRED
+        - SESSION_REPLACED
+        - SESSION_INVALIDATED
+        - INVALID_CRON_SECRET
+        - ACCESS_DENIED
+        - USER_NOT_FOUND
+        - LOAN_NOT_FOUND
+        - EQUIPMENT_NOT_FOUND
+        - NOTIFICATION_NOT_FOUND
+        - ACTIVE_SESSION_EXISTS
+        - NO_ACTIVE_SESSION
+        - CANNOT_DEACTIVATE_SELF
+        - LAST_ADMIN
+        - USER_HAS_LOANS_IN_PROGRESS
+        - EMAIL_ALREADY_REGISTERED
+        - INVENTORY_CODE_EXISTS
+        - COMMITTED_UNITS
+        - EQUIPMENT_HAS_ACTIVE_LOANS
+        - EQUIPMENT_UNAVAILABLE
+        - INSUFFICIENT_UNITS
+        - LOAN_LIMIT_REACHED
+        - STUDENT_BLOCKED
+        - OVERDUE_LOAN_PENDING
+        - LOAN_NOT_PENDING
+        - LOAN_ALREADY_ENDED
+        - LOAN_ALREADY_STARTED
+        - OUTSIDE_APPROVAL_HOURS
+        - LOAN_NOT_APPROVED
+        - LOAN_NOT_STARTED
+        - SERVICE_NOT_STARTED
+        - LOAN_NOT_DELIVERED
+        - LOAN_ALREADY_DELIVERED
+        - LOAN_NOT_CANCELLABLE
+        - CONCURRENT_MODIFICATION
+        - DATA_CONFLICT
+        - TOO_MANY_ATTEMPTS
+        - INTERNAL_ERROR
+    ProblemDetail:
+      type: object
+      description: Error en formato RFC 7807 (`application/problem+json`) con extensiones propias.
+      required: [type, title, status, detail, instance, code, requestId, timestamp]
+      properties:
+        type: { type: string, description: 'https://prestalab/errors/<code-en-kebab>', example: https://prestalab/errors/insufficient-units }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string, description: Texto para la persona usuaria. }
+        instance: { type: string, description: Ruta de la petición, example: /api/loans }
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        requestId: { type: string, description: Valor de la cabecera X-Request-Id; sirve de código de referencia. }
+        timestamp: { type: string, format: date-time }
+        errors:
+          type: array
+          description: Mensajes por campo (VALIDATION_ERROR).
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+        items:
+          type: array
+          description: Equipos sin unidades suficientes (INSUFFICIENT_UNITS).
+          items:
+            type: object
+            properties:
+              equipmentId: { type: integer, format: int64 }
+              name: { type: string }
+              requested: { type: integer }
+              available: { type: integer }
+        blockedUntil: { type: string, format: date, description: Primer día en que podrá volver a solicitar (STUDENT_BLOCKED). }
+        activeSession:
+          type: object
+          description: Sesión existente (ACTIVE_SESSION_EXISTS). No incluye IP ni dispositivo.
+          properties:
+            startedAt: { type: string, format: date-time }
+            lastActivityAt: { type: string, format: date-time }
+        loans:
+          type: array
+          description: Préstamos en curso del titular (USER_HAS_LOANS_IN_PROGRESS).
+          items:
+            type: object
+            properties:
+              loanId: { type: integer, format: int64 }
+              status: { type: string, enum: [SOLICITADO, APROBADO, ENTREGADO, VENCIDO] }
+              startDate: { type: string, format: date }
+              endDate: { type: string, format: date }
+    PageResponse:
+      type: object
+      description: Respuesta paginada genérica. Cada listado la especializa con el tipo de `content`.
+      required: [content, page, size, totalElements, totalPages]
+      properties:
+        content: { type: array, items: {} }
+        page: { type: integer, description: Índice de página desde 0. }
+        size: { type: integer }
+        totalElements: { type: integer, format: int64 }
+        totalPages: { type: integer }
+    RegisterRequest:
+      type: object
+      required: [fullName, email, password]
+      properties:
+        fullName: { type: string, minLength: 1, maxLength: 120 }
+        email: { type: string, maxLength: 150, description: 'Debe terminar en @institucion.edu; si no, "Usa tu correo institucional".' }
+        password: { type: string, minLength: 8, maxLength: 72, description: 'Al menos una letra y un número; si no, "La contraseña debe tener al menos 8 caracteres, una letra y un número".' }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, minLength: 1, maxLength: 150, description: Sin validación de formato ni dominio en el inicio de sesión. }
+        password: { type: string, minLength: 1, maxLength: 72 }
+        replaceExistingSession: { type: boolean, default: false, description: 'true para cerrar la otra sesión y continuar aquí, tras recibir ACTIVE_SESSION_EXISTS.' }
+    AuthResponse:
+      type: object
+      required: [accessToken, tokenType, expiresAt, sessionExpiresAt, user]
+      properties:
+        accessToken: { type: string }
+        tokenType: { type: string, enum: [Bearer] }
+        expiresAt: { type: string, format: date-time, description: 'Vencimiento del access token (15 min, recortado a sessionExpiresAt).' }
+        sessionExpiresAt: { type: string, format: date-time, description: 'Fin de la vida máxima de la sesión: 1 h ESTUDIANTE, 8 h ENCARGADO y ADMIN.' }
+        user:
+          type: object
+          required: [id, fullName, role]
+          properties:
+            id: { type: integer, format: int64 }
+            fullName: { type: string }
+            role: { $ref: '#/components/schemas/Role' }
+    UserResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        fullName: { type: string }
+        email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+    UserStatus:
+      type: string
+      description: Estado de la cuenta. DADA_DE_BAJA equivale a `deleted_at` con valor.
+      enum: [ACTIVA, DADA_DE_BAJA]
+    UserAdminResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        fullName: { type: string }
+        email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        createdAt: { type: string, format: date-time }
+        deactivatedAt: { type: string, format: date-time, nullable: true, description: Fecha de la baja; null si la cuenta está activa. }
+        hasActiveSession: { type: boolean }
+    UserAdminPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResponse'
+        - type: object
+          properties:
+            content: { type: array, items: { $ref: '#/components/schemas/UserAdminResponse' } }
+    UserDeactivationResponse:
+      type: object
+      properties:
+        userId: { type: integer, format: int64 }
+        deactivatedAt: { type: string, format: date-time }
+        sessionRevoked: { type: boolean, description: false cuando la cuenta ya estaba dada de baja (operación idempotente). }
+    CategoryResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+    EquipmentAvailabilityResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        inventoryCode: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        categoryId: { type: integer, format: int64 }
+        categoryName: { type: string }
+        status: { $ref: '#/components/schemas/EquipmentStatus' }
+        availableUnits: { type: integer, minimum: 0, description: Unidades totales menos unidades retenidas en el rango consultado; nunca negativa. }
+    EquipmentAvailabilityPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResponse'
+        - type: object
+          properties:
+            content: { type: array, items: { $ref: '#/components/schemas/EquipmentAvailabilityResponse' } }
+    EquipmentRequest:
+      type: object
+      required: [inventoryCode, name, categoryId, totalUnits, status]
+      properties:
+        inventoryCode: { type: string, minLength: 1, maxLength: 30 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500, nullable: true }
+        categoryId: { type: integer, format: int64 }
+        totalUnits: { type: integer, minimum: 1, description: 'Al menos 1; si no, "Las unidades deben ser al menos 1".' }
+        status: { $ref: '#/components/schemas/EquipmentStatus' }
+        version: { type: integer, format: int64, description: Obligatoria en PUT (bloqueo optimista). }
+    EquipmentResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        inventoryCode: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        categoryId: { type: integer, format: int64 }
+        categoryName: { type: string }
+        totalUnits: { type: integer, minimum: 0 }
+        committedUnits: { type: integer, minimum: 0, description: Máximo de unidades retenidas en cualquier día desde hoy. }
+        status: { $ref: '#/components/schemas/EquipmentStatus' }
+        version: { type: integer, format: int64 }
+        createdAt: { type: string, format: date-time }
+    EquipmentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResponse'
+        - type: object
+          properties:
+            content: { type: array, items: { $ref: '#/components/schemas/EquipmentResponse' } }
+    EquipmentRetirementResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        rejectedLoanIds: { type: array, items: { type: integer, format: int64 }, description: Solicitudes SOLICITADO rechazadas con "Equipo dado de baja". }
+    LoanItemRequest:
+      type: object
+      required: [equipmentId, quantity]
+      properties:
+        equipmentId: { type: integer, format: int64 }
+        quantity: { type: integer, minimum: 1, description: 'Al menos 1; si no, "La cantidad debe ser al menos 1".' }
+    LoanRequest:
+      type: object
+      required: [startDate, endDate, items]
+      properties:
+        startDate: { type: string, format: date, description: 'No anterior a hoy ("La fecha de inicio no puede ser anterior a hoy").' }
+        endDate: { type: string, format: date, description: 'No anterior a startDate. Rango de máximo 7 días contando ambos extremos: fin hasta 6 días después del inicio ("El rango máximo es de 7 días").' }
+        items: { type: array, minItems: 1, description: Equipos sin repetir., items: { $ref: '#/components/schemas/LoanItemRequest' } }
+    LoanRejectionRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 10, maxLength: 250, description: 'Motivo visible para el estudiante. Fuera de 10 a 250 caracteres: "El motivo debe tener entre 10 y 250 caracteres".' }
+    LoanCancellationRequest:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 250, nullable: true, description: Opcional. Sin motivo queda "Cancelado por usuario". }
+    LoanReturnLine:
+      type: object
+      required: [condition, quantity]
+      properties:
+        condition: { $ref: '#/components/schemas/ReturnCondition' }
+        quantity: { type: integer, minimum: 1 }
+        notes: { type: string, maxLength: 500, nullable: true, description: 'Obligatoria y no vacía si condition no es BUENO ("La observación es obligatoria").' }
+    LoanReturnItem:
+      type: object
+      required: [equipmentId, lines]
+      properties:
+        equipmentId: { type: integer, format: int64 }
+        lines: { type: array, minItems: 1, description: La suma de quantity debe igualar las unidades prestadas del equipo., items: { $ref: '#/components/schemas/LoanReturnLine' } }
+    LoanReturnRequest:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, minItems: 1, description: Un elemento por cada equipo del préstamo., items: { $ref: '#/components/schemas/LoanReturnItem' } }
+    LoanReturnResponse:
+      type: object
+      properties:
+        loan: { $ref: '#/components/schemas/LoanResponse' }
+        affectedApprovedLoans:
+          type: array
+          description: Préstamos APROBADO futuros que quedan con más unidades que el total del equipo tras restar DANADO o PERDIDO. Solo informativo.
+          items: { $ref: '#/components/schemas/LoanSummaryResponse' }
+    LoanItemResponse:
+      type: object
+      properties:
+        equipmentId: { type: integer, format: int64 }
+        name: { type: string }
+        inventoryCode: { type: string }
+        quantity: { type: integer }
+        returns:
+          type: array
+          description: Resultado de la devolución por condición (vacío hasta devolver).
+          items: { $ref: '#/components/schemas/LoanReturnLine' }
+    LoanStatusHistoryEntry:
+      type: object
+      properties:
+        fromStatus: { $ref: '#/components/schemas/LoanStatus' }
+        toStatus: { $ref: '#/components/schemas/LoanStatus' }
+        changedAt: { type: string, format: date-time }
+        changedBy: { type: string, nullable: true, description: Nombre de quien hizo el cambio; null cuando lo hizo el sistema. }
+    LoanResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        status: { $ref: '#/components/schemas/LoanStatus' }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        effectiveEndDate: { type: string, format: date, nullable: true, description: Fecha fin efectiva; null hasta la entrega. }
+        requester: { type: string, description: Nombre del estudiante titular. }
+        items: { type: array, items: { $ref: '#/components/schemas/LoanItemResponse' } }
+        pickupDeadline: { type: string, format: date-time, nullable: true, description: Plazo de recogida; null hasta la aprobación. }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+        returnedAt: { type: string, format: date-time, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+        closureReason: { allOf: [ { $ref: '#/components/schemas/ClosureReason' } ], nullable: true }
+        closureNote: { type: string, nullable: true, description: 'Motivo visible: el texto libre del rechazo o la cancelación, o el texto fijo ("No recogido", "Sin resolver a tiempo", "Equipo dado de baja", "Cancelado por usuario").' }
+        statusHistory: { type: array, items: { $ref: '#/components/schemas/LoanStatusHistoryEntry' } }
+        createdAt: { type: string, format: date-time }
+    LoanSummaryResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        status: { $ref: '#/components/schemas/LoanStatus' }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        requester: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              equipmentId: { type: integer, format: int64 }
+              name: { type: string }
+              quantity: { type: integer }
+        closureNote: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    LoanSummaryPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResponse'
+        - type: object
+          properties:
+            content: { type: array, items: { $ref: '#/components/schemas/LoanSummaryResponse' } }
+    LoanEligibilityResponse:
+      type: object
+      properties:
+        inProgressCount: { type: integer, description: 'Préstamos en curso (SOLICITADO, APROBADO, ENTREGADO o VENCIDO).' }
+        limit: { type: integer, example: 3 }
+        blockedUntil: { type: string, format: date, nullable: true, description: Primer día en que podrá volver a solicitar si tiene una sanción vigente. }
+        hasOverdueLoan: { type: boolean, description: Tiene un préstamo VENCIDO sin devolver. }
+    NotificationResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        loanId: { type: integer, format: int64 }
+        requester: { type: string, description: Estudiante titular del préstamo. }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              quantity: { type: integer }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date, description: Fecha fin efectiva cuando existe. }
+        daysLate: { type: integer, nullable: true, description: Solo PRESTAMO_VENCIDO. }
+        reason: { type: string, nullable: true, description: 'Solo NO_RECOGIDO ("No recogido") y SIN_RESOLVER_A_TIEMPO ("Sin resolver a tiempo").' }
+        readAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    NotificationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResponse'
+        - type: object
+          properties:
+            content: { type: array, items: { $ref: '#/components/schemas/NotificationResponse' } }
+    UnreadCountResponse:
+      type: object
+      properties:
+        count: { type: integer, minimum: 0 }
+    MetricsResponse:
+      type: object
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        ranking:
+          type: array
+          maxItems: 10
+          description: Equipos con más préstamos entregados (ENTREGADO, VENCIDO o DEVUELTO), de mayor a menor.
+          items:
+            type: object
+            properties:
+              equipmentId: { type: integer, format: int64 }
+              name: { type: string }
+              loans: { type: integer }
+        overdueLoans: { type: integer, description: Préstamos VENCIDO con inicio dentro del rango. }
+        occupancyPercent: { type: number, format: double, minimum: 0, maximum: 100, description: Unidades-día retenidas entre unidades totales de equipos activos por días del rango. }

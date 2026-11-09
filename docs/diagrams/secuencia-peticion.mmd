@@ -1,0 +1,58 @@
+---
+title: Petición genérica a la API (diseño)
+---
+sequenceDiagram
+    autonumber
+    actor U as Navegador
+    participant V as Vercel
+    participant T as RequestTraceFilter
+    participant SF as SecurityFilterChain
+    participant AI as ActiveSessionInterceptor
+    participant C as Controller
+    participant S as Service
+    participant R as Repository
+    participant M as Mapper
+    participant DB as MySQL
+    U->>V: /api/... con Authorization Bearer
+    V->>T: reenvía y añade x-vercel-id
+    T->>T: toma o genera X-Request-Id, pone requestId y edgeId en MDC
+    T->>SF: continúa la cadena
+    alt token ausente, inválido o vencido
+        SF-->>U: 401 UNAUTHENTICATED por ProblemDetailAuthenticationEntryPoint
+    else token válido
+        SF->>SF: valida firma, exp e iss, crea AuthenticatedUser, UserMdcFilter pone userId y role
+        SF->>AI: toda petición autenticada, de cualquier rol
+        AI->>DB: una consulta por llave primaria a refresh_tokens (sid) unida a users, sin caché
+        alt cuenta dada de baja o sesión revocada o vencida
+            AI-->>U: 401 SESSION_INVALIDATED, SESSION_REPLACED o SESSION_EXPIRED por GlobalExceptionHandler
+        else la base no responde
+            AI-->>U: 500 INTERNAL_ERROR (falla cerrada)
+        else sesión activa
+            AI->>C: continúa
+            C->>C: Bean Validation y @PreAuthorize
+            alt datos inválidos
+                C-->>U: 400 VALIDATION_ERROR por GlobalExceptionHandler
+            else acceso denegado
+                C-->>U: 403 Acceso denegado
+            else datos válidos
+                C->>S: caso de uso
+                activate S
+                Note over S,DB: Una transacción
+                S->>R: consultas y bloqueos
+                R->>DB: SQL parametrizado
+                DB-->>R: filas
+                S->>M: entidad a Response
+                M-->>S: Response
+                deactivate S
+                alt regla de negocio incumplida
+                    S-->>U: 409 con code y detail exactos, WARN sin traza
+                else error inesperado
+                    S-->>U: 500 INTERNAL_ERROR con requestId, registro ERROR
+                else éxito
+                    S-->>C: Response
+                    C-->>U: 2xx con cabecera X-Request-Id
+                end
+            end
+        end
+    end
+    T->>T: escribe la línea de acceso http_request y limpia el MDC

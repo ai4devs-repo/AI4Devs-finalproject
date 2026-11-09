@@ -1,0 +1,15 @@
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.vercel/
+
+# Builds
+backend/target/
+frontend/dist/
+frontend/.angular/
+node_modules/
+e2e/test-results/
+e2e/playwright-report/
+docs/ai-log/.last-prompt
